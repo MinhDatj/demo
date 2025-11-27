@@ -208,8 +208,8 @@ def parse_args():
     parser.add_argument("--embed-dim", type=int, default=16)
     parser.add_argument("--hidden-dim", type=int, default=8)
     parser.add_argument("--n-qubits", type=int, default=4)
-    parser.add_argument("--train-size", type=int, default=10000, help="Number of training samples to use (0 for full)")
-    parser.add_argument("--test-size", type=int, default=2000, help="Number of test samples to use (0 for full)")
+    parser.add_argument("--train-size", type=int, default=200000, help="Number of training samples to use (0 for full)")
+    parser.add_argument("--test-size", type=int, default=12415, help="Number of test samples to use (0 for full)")
     return parser.parse_args()
 
 
