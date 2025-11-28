@@ -11,6 +11,9 @@ import torch.optim as optim
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 from tqdm import tqdm
+import math 
+import random
+from torch.utils.data import Subset
 
 ALPHABET = string.ascii_lowercase + string.digits + "."
 char2idx = {c: i + 1 for i, c in enumerate(ALPHABET)}
@@ -54,6 +57,22 @@ def take_subset(dataset: Dataset, n: int) -> Subset:
     n = min(n, len(dataset))
     return Subset(dataset, list(range(n)))
 
+def balance_dataset(ds, ratio=0.5):
+    """Return a balanced subset with roughly 50/50 labels."""
+   
+
+    # Extract indices by label
+    idx_0 = [i for i, (_, y) in enumerate(ds) if int(y) == 0]
+    idx_1 = [i for i, (_, y) in enumerate(ds) if int(y) == 1]
+
+    # Choose equal size for both classes
+    n = min(len(idx_0), len(idx_1))
+    random.shuffle(idx_0)
+    random.shuffle(idx_1)
+    selected = idx_0[:n] + idx_1[:n]
+    random.shuffle(selected)
+    return Subset(ds, selected)
+
 
 def vqc_block(n_qubits: int):
     dev = qml.device("default.qubit", wires=n_qubits)
@@ -82,7 +101,9 @@ class QuantumGate(nn.Module):
 
     def forward(self, x_t: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
         combined = torch.cat([x_t, h_prev], dim=1)
+
         q_inputs = self.input_linear(combined)
+        q_inputs = math.pi * torch.tanh(q_inputs) # limit the angle 
         q_features = self.vqc(q_inputs)
         return self.output_linear(q_features)
 
@@ -117,13 +138,19 @@ class QuantumLSTMClassifier(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         emb = self.embedding(x)
-        batch_size = x.size(0)
+        batch_size,T ,E = emb.shape 
         h_t = emb.new_zeros((batch_size, self.cell.hidden_dim))
         c_t = emb.new_zeros((batch_size, self.cell.hidden_dim))
+        hs =[]
         for t in range(emb.size(1)):
             h_t, c_t = self.cell(emb[:, t, :], (h_t, c_t))
-        output = self.dropout(h_t)
-        return self.fc(output)
+            hs.append(h_t.unsqueeze(1))
+        H_seq = torch.cat(hs,dim=1) 
+        mask = (x!=0).float().unsqueeze(-1)   
+        pooled = (H_seq*mask ).sum(dim= 1 )/(mask.sum(dim =1 )+1e-9 )
+        logits = self.fc ( self.dropout (pooled ))
+        
+        return logits 
 
 
 def train_one_epoch(model: nn.Module, loader: DataLoader, criterion, optimizer, device: torch.device):
@@ -162,17 +189,53 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device):
     return accuracy, precision, recall, f1
 
 
+# def build_loaders(data_dir: str, batch_size: int, train_size: int, test_size: int):
+#     benign_train_ds = load_dataset(f"{data_dir}/benign_train.pkl")
+#     benign_test_ds = load_dataset(f"{data_dir}/benign_test.pkl")
+#     dga_1_train_ds = load_dataset(f"{data_dir}/dga_1_train.pkl")
+#     dga_1_test_ds = load_dataset(f"{data_dir}/dga_1_test.pkl")
+#     dga_2_train_ds = load_dataset(f"{data_dir}/dga_2_train.pkl")
+#     dga_2_test_ds = load_dataset(f"{data_dir}/dga_2_test.pkl")
+#     dga_3_train_ds = load_dataset(f"{data_dir}/dga_3_train.pkl")
+#     dga_3_test_ds = load_dataset(f"{data_dir}/dga_3_test.pkl")
+#     dga_4_train_ds = load_dataset(f"{data_dir}/dga_4_train.pkl")
+#     dga_4_test_ds = load_dataset(f"{data_dir}/dga_4_test.pkl")
+
+#     train_ds = ConcatDataset([
+#         benign_train_ds,
+#         dga_1_train_ds,
+#         dga_2_train_ds,
+#         dga_3_train_ds,
+#         dga_4_train_ds,
+#     ])
+#     test_ds = ConcatDataset([
+#         benign_test_ds,
+#         dga_1_test_ds,
+#         dga_2_test_ds,
+#         dga_3_test_ds,
+#         dga_4_test_ds,
+#     ])
+
+#     if train_size > 0:
+#         train_ds = take_subset(train_ds, train_size)
+#     if test_size > 0:
+#         test_ds = take_subset(test_ds, test_size)
+
+#     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+#     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+#     return train_loader, test_loader
 def build_loaders(data_dir: str, batch_size: int, train_size: int, test_size: int):
+   
     benign_train_ds = load_dataset(f"{data_dir}/benign_train.pkl")
-    benign_test_ds = load_dataset(f"{data_dir}/benign_test.pkl")
-    dga_1_train_ds = load_dataset(f"{data_dir}/dga_1_train.pkl")
-    dga_1_test_ds = load_dataset(f"{data_dir}/dga_1_test.pkl")
-    dga_2_train_ds = load_dataset(f"{data_dir}/dga_2_train.pkl")
-    dga_2_test_ds = load_dataset(f"{data_dir}/dga_2_test.pkl")
-    dga_3_train_ds = load_dataset(f"{data_dir}/dga_3_train.pkl")
-    dga_3_test_ds = load_dataset(f"{data_dir}/dga_3_test.pkl")
-    dga_4_train_ds = load_dataset(f"{data_dir}/dga_4_train.pkl")
-    dga_4_test_ds = load_dataset(f"{data_dir}/dga_4_test.pkl")
+    benign_test_ds  = load_dataset(f"{data_dir}/benign_test.pkl")
+    dga_1_train_ds  = load_dataset(f"{data_dir}/dga_1_train.pkl")
+    dga_1_test_ds   = load_dataset(f"{data_dir}/dga_1_test.pkl")
+    dga_2_train_ds  = load_dataset(f"{data_dir}/dga_2_train.pkl")
+    dga_2_test_ds   = load_dataset(f"{data_dir}/dga_2_test.pkl")
+    dga_3_train_ds  = load_dataset(f"{data_dir}/dga_3_train.pkl")
+    dga_3_test_ds   = load_dataset(f"{data_dir}/dga_3_test.pkl")
+    dga_4_train_ds  = load_dataset(f"{data_dir}/dga_4_train.pkl")
+    dga_4_test_ds   = load_dataset(f"{data_dir}/dga_4_test.pkl")
 
     train_ds = ConcatDataset([
         benign_train_ds,
@@ -189,27 +252,32 @@ def build_loaders(data_dir: str, batch_size: int, train_size: int, test_size: in
         dga_4_test_ds,
     ])
 
+   
+    train_ds = balance_dataset(train_ds)
+    test_ds  = balance_dataset(test_ds)
+
     if train_size > 0:
         train_ds = take_subset(train_ds, train_size)
     if test_size > 0:
         test_ds = take_subset(test_ds, test_size)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+    test_loader  = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
     return train_loader, test_loader
+
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Quantum LSTM classifier with PennyLane")
     parser.add_argument("--data-dir", default="domain2", help="Path to directory containing pickled datasets")
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=5e-4)
-    parser.add_argument("--embed-dim", type=int, default=16)
+    parser.add_argument("--embed-dim", type=int, default=128)
     parser.add_argument("--hidden-dim", type=int, default=8)
     parser.add_argument("--n-qubits", type=int, default=4)
-    parser.add_argument("--train-size", type=int, default=200000, help="Number of training samples to use (0 for full)")
-    parser.add_argument("--test-size", type=int, default=12415, help="Number of test samples to use (0 for full)")
+    parser.add_argument("--train-size", type=int, default=80000, help="Number of training samples to use (0 for full)")
+    parser.add_argument("--test-size", type=int, default=0, help="Number of test samples to use (0 for full)")
     return parser.parse_args()
 
 
@@ -218,6 +286,28 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
     train_loader, test_loader = build_loaders(args.data_dir, args.batch_size, args.train_size, args.test_size)
+        # Đếm số mẫu từng nhãn trong tập train và test
+    from collections import Counter
+
+    all_train_labels = []
+    for _, lbl in train_loader.dataset:
+        if isinstance(lbl, torch.Tensor):
+            all_train_labels.append(int(lbl.item()))
+        else:
+            all_train_labels.append(int(lbl))
+    train_counts = Counter(all_train_labels)
+
+    all_test_labels = []
+    for _, lbl in test_loader.dataset:
+        if isinstance(lbl, torch.Tensor):
+            all_test_labels.append(int(lbl.item()))
+        else:
+            all_test_labels.append(int(lbl))
+    test_counts = Counter(all_test_labels)
+
+    print(f"Train set: {train_counts[0]} samples with label 0, {train_counts[1]} samples with label 1")
+    print(f"Test set:  {test_counts[0]} samples with label 0, {test_counts[1]} samples with label 1")
+
 
     model = QuantumLSTMClassifier(
         vocab_size=vocab_size,
@@ -238,4 +328,5 @@ def main():
 
 
 if __name__ == "__main__":
+    
     main()
